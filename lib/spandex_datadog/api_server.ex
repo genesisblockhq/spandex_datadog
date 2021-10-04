@@ -401,5 +401,7 @@ defmodule SpandexDatadog.ApiServer do
 
   defp term_to_string(term) when is_binary(term), do: term
   defp term_to_string(term) when is_atom(term), do: term
+  # let maps through
+  defp term_to_string(term) when is_map(term), do: term
   defp term_to_string(term), do: inspect(term)
 end
