@@ -12,6 +12,6 @@ defmodule SpandexDatadog.Test.Support.TestApiServer do
   end
 
   defp format(%Trace{spans: spans, priority: priority, baggage: baggage}) do
-    Enum.map(spans, fn span -> ApiServer.format(span, priority, baggage) end)
+    Enum.map(spans, fn span -> ApiServer.format(span, priority, false, baggage) end)
   end
 end

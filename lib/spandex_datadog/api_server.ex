@@ -26,6 +26,7 @@ defmodule SpandexDatadog.ApiServer do
       :waiting_traces,
       :batch_size,
       :sync_threshold,
+      :send_traces_to_ci?,
       :agent_pid
     ]
   end
@@ -42,6 +43,7 @@ defmodule SpandexDatadog.ApiServer do
     verbose?: false,
     batch_size: 10,
     sync_threshold: 20,
+    send_traces_to_ci?: false,
     name: __MODULE__,
     api_adapter: SpandexDatadog.ApiServer
   ]
@@ -57,6 +59,7 @@ defmodule SpandexDatadog.ApiServer do
   * `:verbose?` - Only to be used for debugging: All finished traces will be logged. Defaults to `false`
   * `:batch_size` - The number of traces that should be sent in a single batch. Defaults to `10`.
   * `:sync_threshold` - The maximum number of processes that may be sending traces at any one time. This adds backpressure. Defaults to `20`.
+  * `:send_traces_to_ci?` - The boolean to enable sending traces to the CI section of Datadog. Defaults to `false` which sends the traces to the APM section of Datadog.
   * `:name` - The name the GenServer should have. Currently only used for testing. Defaults to `SpandexDatadog.ApiServer`
   """
   @spec start_link(opts :: Keyword.t()) :: GenServer.on_start()
@@ -81,6 +84,7 @@ defmodule SpandexDatadog.ApiServer do
       waiting_traces: [],
       batch_size: opts[:batch_size],
       sync_threshold: opts[:sync_threshold],
+      send_traces_to_ci?: opts[:send_traces_to_ci?],
       agent_pid: agent_pid
     }
 
@@ -144,12 +148,12 @@ defmodule SpandexDatadog.ApiServer do
     :ok
   end
 
-  def send_and_log(traces, %{verbose?: verbose?} = state) do
+  def send_and_log(traces, %{verbose?: verbose?, send_traces_to_ci?: send_traces_to_ci?} = state) do
     headers = @headers ++ [{"X-Datadog-Trace-Count", length(traces)}]
 
     response =
       traces
-      |> Enum.map(&format/1)
+      |> Enum.map(fn trace -> format(trace, send_traces_to_ci?) end)
       |> encode()
       |> push(headers, state)
 
@@ -160,20 +164,20 @@ defmodule SpandexDatadog.ApiServer do
     :ok
   end
 
-  @deprecated "Please use format/3 instead"
+  @deprecated "Please use format/4 instead"
   @doc false
-  @spec format(Trace.t()) :: map()
-  def format(%Trace{spans: spans, priority: priority, baggage: baggage}) do
-    Enum.map(spans, fn span -> format(span, priority, baggage) end)
+  @spec format(Trace.t(), boolean()) :: map()
+  def format(%Trace{spans: spans, priority: priority, baggage: baggage}, send_traces_to_ci?) do
+    Enum.map(spans, fn span -> format(span, priority, send_traces_to_ci?, baggage) end)
   end
 
-  @deprecated "Please use format/3 instead"
+  @deprecated "Please use format/4 instead"
   @doc false
-  @spec format(Span.t()) :: map()
-  def format(%Span{} = span), do: format(span, 1, [])
+  @spec format(Span.t(), boolean()) :: map()
+  def format(%Span{} = span, send_traces_to_ci?), do: format(span, 1, send_traces_to_ci?, [])
 
-  @spec format(Span.t(), integer(), Keyword.t()) :: map()
-  def format(%Span{} = span, priority, _baggage) do
+  @spec format(Span.t(), integer(), boolean(), Keyword.t()) :: map()
+  def format(%Span{} = span, priority, send_traces_to_ci?, _baggage) do
     %{
       trace_id: span.trace_id,
       span_id: span.id,
@@ -184,7 +188,7 @@ defmodule SpandexDatadog.ApiServer do
       error: error(span.error),
       resource: span.resource || span.name,
       service: span.service,
-      type: span.type,
+      type: determine_span_type(span, send_traces_to_ci?),
       meta: meta(span),
       metrics:
         metrics(span, %{
@@ -194,6 +198,21 @@ defmodule SpandexDatadog.ApiServer do
   end
 
   # Private Helpers
+
+  defp determine_span_type(span, true = _send_traces_to_ci?) do
+    # span.type has to be set to "test" to show up in the CI section of datadog, otherwise it'll just go to the APM section
+    case span.parent_id do
+      nil ->
+        "test"
+
+      _ ->
+        ""
+    end
+  end
+
+  defp determine_span_type(span, _send_traces_to_ci?) do
+    span.type
+  end
 
   defp enqueue_trace(state, trace) do
     if state.verbose? do
@@ -401,7 +420,5 @@ defmodule SpandexDatadog.ApiServer do
 
   defp term_to_string(term) when is_binary(term), do: term
   defp term_to_string(term) when is_atom(term), do: term
-  # let maps through
-  defp term_to_string(term) when is_map(term), do: term
   defp term_to_string(term), do: inspect(term)
 end
